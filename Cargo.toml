@@ -1,0 +1,8 @@
+[package]
+name = "ttt"
+version = "0.1.0"
+authors = ["adumbidiot <nathaniel.daniel23@outlook.com>"]
+
+[dependencies]
+serde = "1.0"
+serde_derive = "1.0.27"
