@@ -3,15 +3,20 @@ extern crate serde_derive;
 extern crate serde;
 
 use std::any::Any;
+use std::collections::{HashMap, VecDeque};
 
 pub mod ttt;
 //pub mod ttt2x2;
 
-use std::collections::HashMap;
-use std::collections::VecDeque;
-
 pub type NodeIndex = u128;
 pub type NodeMap = HashMap<NodeIndex, Node>;
+pub type CompilationResult<T> = Result<T, CompilationError>;
+
+#[derive(Debug)]
+pub enum CompilationError {
+	NoCompilation,
+	QueueEmpty
+}
 
 pub trait Compilation {
 	fn inc_nodes_processed(&mut self);
@@ -47,150 +52,153 @@ pub struct Compiler {
 
 impl Compiler {
 	pub fn new() -> Compiler {
-		let compiler = Compiler {
+		Compiler {
 			queue: VecDeque::new(),
 			winners: VecDeque::new(),
 			unscored_nodes: Vec::new(),
 			compilation: None
-		};
-		
-		return compiler;
+		}
 	}
 	
-	pub fn init_compilation(&mut self){
-		self.create_node(0, 0);
+	pub fn init_compilation(&mut self) -> CompilationResult<()>{
+		self.create_node(0, 0)?;
 		self.queue.push_back(0);
+		return Ok(());
 	}
 	
-	pub fn create_node(&mut self, id: NodeIndex, level: usize){
+	pub fn create_node(&mut self, id: NodeIndex, level: usize) -> CompilationResult<()>{
 		let mut n = Node::new();
 		n.id = id;
 		n.level = level;
 		
-		self.compilation.as_mut().unwrap().insert_node(id, n);
+		return self.get_compilation_mut().map(|compilation| compilation.insert_node(id, n));
 	}
 	
-	pub fn is_node(&self, id: &NodeIndex) -> bool {
-		return self.compilation.as_ref().unwrap().contains_node(id);
+	pub fn is_node(&self, id: &NodeIndex) -> CompilationResult<bool>{
+		return self.get_compilation().map(|compilation| compilation.contains_node(id));
 	}
 	
-	pub fn get_node(&mut self, index: NodeIndex) -> &mut Node {
-		return self.compilation.as_mut().unwrap().get_node_mut(index);
+	pub fn get_node(&mut self, index: NodeIndex) -> CompilationResult<&mut Node>{
+		return self.get_compilation_mut().map(|compilation| compilation.get_node_mut(index));
 	}
 	
-	pub fn get_child_states(&self, id: NodeIndex, team: u8) -> Vec<NodeIndex> {
-		return self.compilation.as_ref().unwrap().get_child_states(id, team);
+	pub fn get_child_states(&self, id: NodeIndex, team: u8) -> CompilationResult<Vec<NodeIndex>>{
+		return self.get_compilation().map(|compilation| compilation.get_child_states(id, team));
 	}
 	
-	pub fn get_winner(&self, index: &NodeIndex) -> u8 {
-		return self.compilation.as_ref().unwrap().get_winner(index);
+	pub fn get_winner(&self, index: &NodeIndex) -> CompilationResult<u8>{
+		return self.get_compilation().map(|compilation| compilation.get_winner(index));
 	}
 	
-	pub fn process(&mut self){
-		if self.queue.len() == 0 {
-			return;
-		}
+	pub fn process(&mut self) -> CompilationResult<()>{		
+		let node_id = self.queue.pop_front().ok_or(CompilationError::QueueEmpty)?;
+		let node_level = self.get_node(node_id)?.level;
 		
-		let node_id = self.queue.pop_front().unwrap();
-		let node_level = self.get_node(node_id).level;
+		let team: u8 = (node_level % 2) as u8 + 1;
 		
-		let team: u8 = (self.get_node(node_id).level % 2) as u8 + 1;
+		self.get_compilation_mut()?.inc_nodes_processed();
 		
-		self.compilation.as_mut().unwrap().inc_nodes_processed();
-		
-		if self.get_winner(&node_id) != 0 {
-			return; //Can't keep playing after someone has won, no need to process
+		if self.get_winner(&node_id)? != 0 {
+			return Ok(()); //Can't keep playing after someone has won, no need to process
 		}else{
 			self.unscored_nodes.push(node_id);
 		}
 		
-		let states = self.get_child_states(node_id, team);
+		let states = self.get_child_states(node_id, team)?;
 		
 		for i in 0..states.len() {
-			if !self.is_node(&states[i]){
+			if !self.is_node(&states[i])?{
 				//We discovered a new Node!
-				self.create_node(states[i], node_level + 1); //Setup the node..
+				self.create_node(states[i], node_level + 1)?; //Setup the node..
 				self.queue.push_back(states[i]); //and set it to be processed some time in the future.
 				//Since its new, we can check to see if its a "winner"
-				if self.get_winner(&states[i]) != 0 {
+				if self.get_winner(&states[i])? != 0 {
 					//It is!
 					self.winners.push_back(states[i]); //Save to score it later
 				}
 			}
 				
-			self.get_node(states[i]).parents.push(node_id);
-			self.get_node(node_id).children.push(states[i]);
-		}
-	}
-	
-	pub fn post_process(&mut self){
-		if self.winners.len() == 0 {
-			return;
+			self.get_node(states[i])?.parents.push(node_id);
+			self.get_node(node_id)?.children.push(states[i]);
 		}
 		
-		let node_id = self.winners.pop_front().unwrap();
-		let winner = self.get_winner(&node_id);
-		let score = if winner == 1 {
+		return Ok(());
+	}
+	
+	pub fn post_process(&mut self) -> CompilationResult<()>{
+		let node_id = self.winners.pop_front().ok_or(CompilationError::QueueEmpty)?;
+		let score = if self.get_winner(&node_id)? == 1 {
 			100
 		}else{
 			-100
 		};
 		
-		self.get_node(node_id).score = score as i8;
-		self.compilation.as_mut().unwrap().inc_winners_processed();
+		self.get_node(node_id)?.score = score as i8;
+		self.get_compilation_mut()?.inc_winners_processed();
+		return Ok(());
 	}
 	
-	pub fn score_nodes(&mut self){
-		if self.unscored_nodes.len() == 0 {
-			return;
-		}
-		
-		let node_id = self.unscored_nodes.pop().unwrap();
+	pub fn score_nodes(&mut self) -> CompilationResult<()>{		
+		let node_id = self.unscored_nodes.pop().ok_or(CompilationError::QueueEmpty)?;
 		
 		let mut scores = Vec::new();
 		
-		let it = self.get_node(node_id).children.clone();
+		let it = self.get_node(node_id)?.children.clone();
 		
 		for child_id in it.iter() {
-			scores.push(self.get_node(child_id.clone()).score);
+			scores.push(self.get_node(child_id.clone())?.score);
 		}
 		
 		if scores.len() == 0 {
 			scores.push(0);
 		}
 		
-		let score = if self.get_node(node_id).level % 2 == 0 {
-			scores.iter().max().unwrap()
+		let score = if self.get_node(node_id)?.level % 2 == 0 {
+			scores.iter().max().expect("Finding max scores failed")
 		}else{
-			scores.iter().min().unwrap()
+			scores.iter().min().expect("Finding min scores failed")
 		};
 		
-		self.get_node(node_id).score = score.clone();
+		self.get_node(node_id)?.score = score.clone();
 		
-		self.compilation.as_mut().unwrap().inc_nodes_scored();
+		self.get_compilation_mut()?.inc_nodes_scored();
+		return Ok(());
 	}
 	
-	pub fn export(&self) -> HashMap<String, Node>{
-		let map = self.compilation.as_ref().unwrap().get_cloned_map();
+	pub fn export(&self) -> CompilationResult<HashMap<String, Node>>{
+		let map = self.get_compilation()?.get_cloned_map();
+		
 		let mut export_map: HashMap<String, Node> = HashMap::new();
 		
 		for (k, v) in map {
 			export_map.insert(k.to_string(), v); //u128 doesn't serialize correctly with serde, and js can't handle u128s anyway
 		}
 		
-		return export_map;
+		return Ok(export_map);
 	}
 	
-	pub fn get_nodes_processed(&self) -> usize{
-		return self.compilation.as_ref().unwrap().get_nodes_processed();
+	pub fn get_nodes_processed(&self) -> CompilationResult<usize>{
+		return self.get_compilation().map(|compilation| compilation.get_nodes_processed());
 	}
 	
-	pub fn get_winners_processed(&self) -> usize {
-		return self.compilation.as_ref().unwrap().get_winners_processed();
+	pub fn get_winners_processed(&self) -> CompilationResult<usize>{
+		return self.get_compilation().map(|compilation| compilation.get_winners_processed());
 	}
 	
-	pub fn get_nodes_scored(&self) -> usize {
-		return self.compilation.as_ref().unwrap().get_nodes_scored();
+	pub fn get_nodes_scored(&self) -> CompilationResult<usize>{
+		return self.get_compilation().map(|compilation| compilation.get_nodes_scored());
+	}
+	
+	pub fn get_compilation(&self) -> CompilationResult<&Box<Compilation>>{
+		return self.compilation
+			.as_ref()
+			.ok_or(CompilationError::NoCompilation);
+	}
+	
+	pub fn get_compilation_mut(&mut self) -> CompilationResult<&mut Box<Compilation>>{
+		return self.compilation
+			.as_mut()
+			.ok_or(CompilationError::NoCompilation);
 	}
 }
 
@@ -209,27 +217,32 @@ impl AI {
 		self.nodes = n;
 	}
 	
-	pub fn get_node(&self, id: &NodeIndex) -> &Node {
-		return self.nodes.get(id).unwrap();
+	pub fn get_node(&self, id: &NodeIndex) -> Option<&Node>{
+		return self.nodes.get(id);
 	}
 	
-	pub fn get_move(&self, id: NodeIndex, team: u8) -> NodeIndex{
-		let node = self.get_node(&id);
+	pub fn get_move(&self, id: NodeIndex, team: u8) -> Option<NodeIndex>{
+		let node = self.get_node(&id)?;
 		
 		let mut child_id = node.children[0];
 		for i in 0..node.children.len(){
-			if team == 1 && self.get_node(&child_id).score < self.get_node(&node.children[i]).score {
+			let node_score = self.get_score(&node.children[i])?;
+			let child_score = self.get_score(&child_id)?;
+			
+			if team == 1 && child_score < node_score{
 				child_id = node.children[i];
-			}else if team == 2 && self.get_node(&child_id).score > self.get_node(&node.children[i]).score{
+			}else if team == 2 && child_score > node_score{
 				child_id = node.children[i];
 			}
 		}
 		
-		return child_id;
+		return Some(child_id);
 	}
 	
-	pub fn get_score(&self, id: &NodeIndex) -> i8{
-		return self.get_node(id).score;
+	pub fn get_score(&self, id: &NodeIndex) -> Option<i8>{
+		return self
+			.get_node(id)
+			.map(|node| node.score);
 	}
 }
 
